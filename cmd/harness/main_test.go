@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -230,7 +231,7 @@ func TestLedgerLockSerialisesWriters(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			unlock := lockLedger()
+			unlock := lockLedger(context.Background())
 			defer unlock()
 			l := loadLedger()
 			l.noteGlobal("r", fmt.Sprintf("fact %d", i))
@@ -243,4 +244,14 @@ func TestLedgerLockSerialisesWriters(t *testing.T) {
 	if l := loadLedger(); len(l.Pending) != 16 {
 		t.Fatalf("lost writes: pending = %d", len(l.Pending))
 	}
+	// A waiter gives up at its deadline instead of outliving the hook timeout.
+	hold := lockLedger(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	lockLedger(ctx)()
+	if d := time.Since(start); d < 100*time.Millisecond || d > time.Second {
+		t.Fatalf("lock wait = %s, want about the 150ms deadline", d)
+	}
+	hold()
 }

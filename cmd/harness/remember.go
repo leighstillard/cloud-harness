@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -74,7 +75,7 @@ func runRemember(args []string) int {
 		return 1
 	}
 	if global {
-		unlock := lockLedger()
+		unlock := lockLedger(ctx)
 		l := loadLedger()
 		l.noteGlobal(id.String(), text)
 		if err := l.save(); err != nil {
@@ -114,13 +115,17 @@ func runRememberAuto() int {
 		msg = lastAssistantText(in.TranscriptPath)
 	}
 	facts := extractRemembers(msg)
-	unlock := lockLedger()
+	// One deadline covers lock wait, provider calls and the save: the hook
+	// itself is killed at 30 s, which would leave a stored fact unannounced.
+	ctx, cancel := background(25 * time.Second)
+	defer cancel()
+	unlock := lockLedger(ctx)
 	defer unlock()
 	ledger := loadLedger()
 	// A lost claim means the twin hook stores the facts; it never skips the
 	// announcement, which may be older than this message.
 	if len(facts) > 0 && claim("auto-"+claimKey(sessionID(in), msg), dedupeWindow) {
-		ledger.store(in, facts)
+		ledger.store(ctx, in, facts)
 	}
 	if in.HookEventName != "PreCompact" {
 		if batch := ledger.takePending(); len(batch) > 0 {
@@ -135,7 +140,7 @@ func runRememberAuto() int {
 }
 
 // store sends facts not already in the ledger to the provider.
-func (l *ledger) store(in hookInput, facts []fact) {
+func (l *ledger) store(ctx context.Context, in hookInput, facts []fact) {
 	cfg, err := loadConfig()
 	if err != nil {
 		warnf("%v", err)
@@ -146,11 +151,13 @@ func (l *ledger) store(in hookInput, facts []fact) {
 		cwd, _ = os.Getwd()
 	}
 	id := repo.Resolve(cwd)
-	ctx, cancel := background(20 * time.Second)
-	defer cancel()
 	prov := newProvider(cfg, 10*time.Second)
 	stored := 0
 	for _, f := range facts {
+		if ctx.Err() != nil {
+			warnf("auto remember: out of time, %d fact(s) left for the next hook", len(facts)-stored)
+			break
+		}
 		key := hash(f.global, id.String(), f.text)
 		if l.has(key) {
 			continue
@@ -299,19 +306,27 @@ func (l *ledger) takePending() []string {
 	return batch
 }
 
-// lockLedger serialises ledger transactions across processes. A lock that
-// cannot be taken degrades to no lock rather than disabling the hook.
-func lockLedger() func() {
+// lockLedger serialises ledger transactions across processes, waiting at
+// most until ctx's deadline. A lock that cannot be taken degrades to no lock
+// rather than disabling the hook.
+func lockLedger(ctx context.Context) func() {
 	_ = os.MkdirAll(claudeDir(), 0o755)
 	f, err := os.OpenFile(ledgerPath()+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return func() {}
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return func() {}
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }
+		}
+		if err != syscall.EWOULDBLOCK || ctx.Err() != nil {
+			warnf("ledger lock: %v; proceeding without it", err)
+			f.Close()
+			return func() {}
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }
 }
 
 func ledgerPath() string { return filepath.Join(claudeDir(), "harness-remembered.json") }
