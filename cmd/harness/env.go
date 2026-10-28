@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,27 +136,33 @@ func cachePath() string { return filepath.Join(claudeDir(), hctx.CacheFile) }
 // two copies of boot or remember --auto can start at once; O_EXCL makes
 // exactly one of them win. A claim older than window is stale (a resumed
 // session) and may be taken again.
+// claim reports whether this process is the first caller of name in the
+// current window. Claude Code runs every matching hook in parallel, so the
+// plugin hook and the merged settings hook race; O_EXCL on a file named by
+// the time bucket decides, with no stale-file reclaim to race over.
 func claim(name string, window time.Duration) bool {
 	dir := filepath.Join(claudeDir(), "harness-claims")
-	_ = os.MkdirAll(dir, 0o700)
-	p := filepath.Join(dir, name)
-	for attempt := 0; attempt < 2; attempt++ {
-		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			f.Close()
-			pruneClaims(dir, window)
-			return true
-		}
-		st, err := os.Stat(p)
-		if err != nil || time.Since(st.ModTime()) < window {
-			return false
-		}
-		// Stale: rename is atomic, so only one process gets to retry.
-		if os.Rename(p, p+".stale") != nil {
-			return false
-		}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		warnf("claims: %v", err)
+		return true // storage trouble must not silently disable the hook
 	}
-	return false
+	bucket := time.Now().UnixNano() / int64(window)
+	f, err := os.OpenFile(filepath.Join(dir, fmt.Sprintf("%s-%d", name, bucket)), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return false
+	}
+	if err != nil {
+		warnf("claims: %v", err)
+		return true
+	}
+	f.Close()
+	// ponytail: hooks straddling a bucket boundary would both win; a previous
+	// bucket claimed less than a window ago still counts as taken.
+	if st, err := os.Stat(filepath.Join(dir, fmt.Sprintf("%s-%d", name, bucket-1))); err == nil && time.Since(st.ModTime()) < window {
+		return false
+	}
+	pruneClaims(dir, window)
+	return true
 }
 
 func pruneClaims(dir string, window time.Duration) {

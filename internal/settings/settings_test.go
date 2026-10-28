@@ -136,8 +136,12 @@ func TestMergeFileCreatesAndRewrites(t *testing.T) {
 	if !strings.Contains(string(b), `"model": "x"`) || strings.Count(string(b), "harness remember --auto") != 1 {
 		t.Errorf("file = %s", b)
 	}
-	if entries, _ := os.ReadDir(filepath.Dir(p)); len(entries) != 1 {
-		t.Errorf("temp file left behind: %v", entries)
+	// Exactly the file and its .bak: no temp file left behind.
+	if entries, _ := os.ReadDir(filepath.Dir(p)); len(entries) != 2 {
+		t.Errorf("unexpected files: %v", entries)
+	}
+	if bak, _ := os.ReadFile(p + ".bak"); !strings.HasPrefix(string(bak), `{"model":"x","hooks"`) {
+		t.Errorf(".bak should hold the pre-merge file byte for byte: %s", bak)
 	}
 }
 
@@ -145,4 +149,43 @@ func jsonEqual(a, b any) bool {
 	x, _ := json.Marshal(a)
 	y, _ := json.Marshal(b)
 	return string(x) == string(y)
+}
+
+func TestSwapRefusesConcurrentChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	orig := []byte(`{"a":1}`)
+	if err := os.WriteFile(path, orig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tmp := path + ".harness.tmp"
+	if err := os.WriteFile(tmp, []byte(`{"a":1,"hooks":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Someone else wrote settings.json between read and rename.
+	if err := os.WriteFile(path, []byte(`{"a":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := swap(path, tmp, orig, true); err == nil {
+		t.Fatal("swap should refuse when the file changed underneath")
+	}
+	if got, _ := os.ReadFile(path); string(got) != `{"a":2}` {
+		t.Fatalf("other writer's change lost: %s", got)
+	}
+	if _, err := os.Stat(tmp); err == nil {
+		t.Fatal("tmp file left behind")
+	}
+	// Unchanged: swap succeeds and keeps the old content in .bak.
+	if err := os.WriteFile(tmp, []byte(`{"a":2,"hooks":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := swap(path, tmp, []byte(`{"a":2}`), true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path + ".bak"); string(got) != `{"a":2}` {
+		t.Fatalf(".bak = %s", got)
+	}
+	if got, _ := os.ReadFile(path); string(got) != `{"a":2,"hooks":{}}` {
+		t.Fatalf("settings = %s", got)
+	}
 }

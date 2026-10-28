@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,33 +134,40 @@ func TestClaim(t *testing.T) {
 	if !claim("boot-b", time.Minute) {
 		t.Fatal("other name should win")
 	}
-	// A stale claim (resumed session) can be taken again.
-	p := filepath.Join(claudeDir(), "harness-claims", "boot-a")
-	old := time.Now().Add(-2 * time.Minute)
-	if err := os.Chtimes(p, old, old); err != nil {
-		t.Fatal(err)
+	// After the window passes (resumed session) the name can be taken again.
+	if !claim("boot-c", 50*time.Millisecond) {
+		t.Fatal("boot-c first")
 	}
+	time.Sleep(60 * time.Millisecond)
+	if !claim("boot-c", 50*time.Millisecond) {
+		t.Fatal("claim should be free again after the window")
+	}
+	// Parallel hooks, including ones that straddle a bucket boundary: one winner.
+	for round := 0; round < 20; round++ {
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		wins := 0
+		name := fmt.Sprintf("boot-par-%d", round)
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if claim(name, 5*time.Millisecond) {
+					mu.Lock()
+					wins++
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		if wins != 1 {
+			t.Errorf("parallel claims round %d: %d winners", round, wins)
+		}
+	}
+	// Storage failure is not a duplicate: the hook still runs.
+	t.Setenv("CLAUDE_CONFIG_DIR", "/proc/no-such-dir")
 	if !claim("boot-a", time.Minute) {
-		t.Fatal("stale claim should be reclaimable")
-	}
-	// Parallel hooks: exactly one winner.
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	wins := 0
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if claim("boot-par", time.Minute) {
-				mu.Lock()
-				wins++
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	if wins != 1 {
-		t.Errorf("parallel claims: %d winners", wins)
+		t.Fatal("unwritable claim dir should not suppress the hook")
 	}
 	if claimKey("a", "b") == claimKey("ab") || len(claimKey("x")) != 16 {
 		t.Error("claimKey")
