@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/leighstillard/cloud-harness/internal/config"
@@ -53,12 +54,21 @@ func runBoot(args []string) int {
 	if want := append(append([]config.Plugin{}, cfg.Plugins.Setup...), cfg.Plugins.Session...); isCloud() && len(want) > 0 {
 		ctx, cancel := background(sessionInstall)
 		inst := plugins.New(os.Stderr)
+		var installed []string
 		for _, r := range inst.Ensure(ctx, want) {
-			if r.Err != nil {
+			switch {
+			case r.Err != nil:
 				warnf("session plugin %s: %v", r.Plugin.ID(), r.Err)
+			case !r.Skipped:
+				installed = append(installed, r.Plugin.ID())
 			}
 		}
 		cancel()
+		if len(installed) > 0 {
+			// Plugins are discovered before SessionStart hooks run, so a plugin
+			// installed here is only usable after a reload.
+			block.Note = "installed " + strings.Join(installed, ", ") + "; run /reload-plugins to use them in this session"
+		}
 	}
 
 	// 2. Memory, with the cache as fallback.
