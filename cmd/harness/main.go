@@ -14,7 +14,16 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	args := os.Args[2:]
 	switch os.Args[1] {
+	case "setup":
+		os.Exit(runSetup(args))
+	case "boot":
+		os.Exit(runBoot(args))
+	case "remember":
+		os.Exit(runRemember(args))
+	case "status":
+		os.Exit(runStatus(args))
 	case "version", "--version", "-v":
 		fmt.Println("harness", version)
 	case "help", "--help", "-h":
