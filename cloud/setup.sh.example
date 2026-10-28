@@ -1,0 +1,56 @@
+#!/bin/bash
+# Cloud environment setup script for cloud-harness.
+#
+# Paste this into your cloud environment's "Setup script" box after filling in
+# the config below. It runs as root, before Claude Code launches, before the
+# environment's variables are set, and before the GitHub proxy is up, so it can
+# only fetch public things. It is snapshotted: later sessions skip it until the
+# script or the allowlist changes, or about seven days pass.
+#
+# Personal values live here, in your environment, not in git.
+set -uo pipefail
+
+OWNER="OWNER"            # GitHub owner of the cloud-harness repo that publishes releases
+VERSION="latest"         # or a tag such as v0.1.0
+
+arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+case "$arch" in
+  amd64|x86_64) arch=amd64 ;;
+  arm64|aarch64) arch=arm64 ;;
+esac
+if [ "$VERSION" = "latest" ]; then
+  url="https://github.com/${OWNER}/cloud-harness/releases/latest/download/harness-linux-${arch}"
+else
+  url="https://github.com/${OWNER}/cloud-harness/releases/download/${VERSION}/harness-linux-${arch}"
+fi
+
+if curl -fsSL --retry 3 --retry-delay 2 "$url" -o /usr/local/bin/harness.tmp; then
+  chmod +x /usr/local/bin/harness.tmp
+  mv /usr/local/bin/harness.tmp /usr/local/bin/harness
+else
+  echo "cloud-harness: download failed from $url" >&2
+  rm -f /usr/local/bin/harness.tmp
+fi
+
+mkdir -p ~/.config/cloud-harness
+cat > ~/.config/cloud-harness/config.yml <<'YAML'
+user_id: me
+memory:
+  provider: mem0
+  base_url: https://api.mem0.ai
+  key_env: MEM0_API_KEY
+plugins:
+  setup:
+    - { name: harness, marketplace: cloud-harness, source: OWNER/cloud-harness, version: 0.1.0 }
+  session:
+    # Private marketplaces go here; `harness boot` installs them once the GitHub proxy is up.
+    # - { name: my-plugin, marketplace: my-marketplace, source: OWNER/my-marketplace, version: 0.1.0 }
+YAML
+
+# The claude CLI is pre-installed in the image but may not be on PATH yet.
+export PATH="$PATH:/usr/local/bin:/opt/node22/bin:$HOME/.local/bin"
+
+# Never fail the session over setup: `harness boot` retries missing plugins
+# at session start, and the hooks merge is idempotent.
+harness setup || echo "cloud-harness: setup reported a problem; boot will retry plugins" >&2
+exit 0

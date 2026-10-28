@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/leighstillard/cloud-harness/internal/config"
 	hctx "github.com/leighstillard/cloud-harness/internal/context"
 	"github.com/leighstillard/cloud-harness/internal/memory"
 	"github.com/leighstillard/cloud-harness/internal/plugins"
@@ -46,11 +47,13 @@ func runBoot(args []string) int {
 		return 0
 	}
 
-	// 0. Session plugins (private sources are reachable now that the proxy is up).
-	if isCloud() && len(cfg.Plugins.Session) > 0 {
+	// 0. Session plugins (private sources are reachable now that the proxy is
+	//    up). Setup plugins are included so a failed setup script self-heals;
+	//    anything already installed is skipped.
+	if want := append(append([]config.Plugin{}, cfg.Plugins.Setup...), cfg.Plugins.Session...); isCloud() && len(want) > 0 {
 		ctx, cancel := background(sessionInstall)
 		inst := plugins.New(os.Stderr)
-		for _, r := range inst.Ensure(ctx, cfg.Plugins.Session) {
+		for _, r := range inst.Ensure(ctx, want) {
 			if r.Err != nil {
 				warnf("session plugin %s: %v", r.Plugin.ID(), r.Err)
 			}
