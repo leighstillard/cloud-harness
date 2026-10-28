@@ -62,6 +62,7 @@ func TestErrors(t *testing.T) {
 		"missing user":   "memory:\n  provider: mem0\n",
 		"bad provider":   "user_id: a\nmemory:\n  provider: pinecone\n",
 		"bad url":        "user_id: a\nmemory:\n  base_url: api.mem0.ai\n",
+		"http remote":    "user_id: a\nmemory:\n  base_url: http://api.mem0.ai\n",
 		"unknown field":  "user_id: a\nmemmory: {}\n",
 		"plugin no name": "user_id: a\nplugins:\n  setup:\n    - { marketplace: m, source: s }\n",
 		"plugin no mkt":  "user_id: a\nplugins:\n  session:\n    - { name: n, source: s }\n",
@@ -71,6 +72,14 @@ func TestErrors(t *testing.T) {
 	for name, in := range cases {
 		if _, err := Parse([]byte(in)); err == nil {
 			t.Errorf("%s: expected error", name)
+		}
+	}
+}
+
+func TestHTTPLoopbackAllowed(t *testing.T) {
+	for _, u := range []string{"http://127.0.0.1:8080", "http://localhost:8080/", "http://[::1]:1"} {
+		if _, err := Parse([]byte("user_id: a\nmemory:\n  base_url: " + u + "\n")); err != nil {
+			t.Errorf("%s: %v", u, err)
 		}
 	}
 }

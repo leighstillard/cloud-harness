@@ -12,6 +12,11 @@ on:
 permissions:
   contents: write
 
+# One release run per tag at a time, so two dispatches for the same new tag
+# cannot both pass the existing-tag check and upload mismatched assets.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,6 +27,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Refuse to rebuild an existing tag from another commit
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet  # checkout leaves a lightweight local tag; let the annotated one replace it
+          if existing=$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}"); then
+            [ "$existing" = "$GITHUB_SHA" ] || { echo "tag $TAG is at $existing, not $GITHUB_SHA" >&2; exit 1; }
+          fi
       - name: Test
         run: go test ./...
       - name: Build

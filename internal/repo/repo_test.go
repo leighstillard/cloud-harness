@@ -36,7 +36,7 @@ func TestResolveFallsBackToBasename(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := Resolve(dir)
-	if id.FromRemote || id.String() != "myproj" {
+	if id.String() != "myproj" {
 		t.Errorf("got %+v", id)
 	}
 }
@@ -54,7 +54,7 @@ func TestResolveFromRemote(t *testing.T) {
 		}
 	}
 	id := Resolve(dir)
-	if !id.FromRemote || id.String() != "acme/widgets" {
+	if id.String() != "acme/widgets" {
 		t.Errorf("got %+v", id)
 	}
 }

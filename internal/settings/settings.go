@@ -43,6 +43,7 @@ func Path() (string, error) {
 // path, creating it if missing. It reports whether the file changed.
 func MergeFile(path string, hooks map[string][]Hook) (changed bool, err error) {
 	raw, err := os.ReadFile(path)
+	existed := err == nil
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		raw = []byte("{}")
@@ -63,7 +64,27 @@ func MergeFile(path string, hooks map[string][]Hook) (changed bool, err error) {
 	if err := os.WriteFile(tmp, merged, 0o600); err != nil {
 		return false, err
 	}
-	return true, os.Rename(tmp, path)
+	return true, swap(path, tmp, raw, existed)
+}
+
+// swap renames tmp over path, but only if path still holds what MergeFile
+// read; a live Claude Code session writing settings.json in between would
+// otherwise lose its change. The previous content is kept in path.bak.
+// ponytail: a re-read, not a lock; flock the file if setup ever runs
+// routinely beside a live session.
+func swap(path, tmp string, raw []byte, existed bool) error {
+	cur, err := os.ReadFile(path)
+	if (existed && (err != nil || !bytes.Equal(cur, raw))) || (!existed && err == nil) {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("%s changed while setup was running; re-run setup", path)
+	}
+	if existed {
+		if err := os.WriteFile(path+".bak", raw, 0o600); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	}
+	return os.Rename(tmp, path)
 }
 
 // Merge adds each hook under its event in the settings JSON unless a hook with

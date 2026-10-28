@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -182,9 +181,6 @@ func Load(ctx context.Context, timeout time.Duration, fetch Fetcher, user, repo 
 	}
 	return g.ms, r.ms, nil
 }
-
-// ErrTimeout marks a provider that took too long.
-var ErrTimeout = errors.New("provider timeout")
 
 // Beads returns up to n ready beads as "- id: title" lines when `bd` is on
 // PATH and .beads/ exists in dir. Any failure yields nil.

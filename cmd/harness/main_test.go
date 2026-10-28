@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestWriteClaudeMD(t *testing.T) {
@@ -117,6 +120,57 @@ func TestDotenvAndSessionID(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_REMOTE_SESSION_ID", "cse_1")
 	if got := sessionID(hookInput{SessionID: "from-hook"}); got != "cse_1" {
 		t.Errorf("env should win: %q", got)
+	}
+}
+
+func TestClaim(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	if !claim("boot-a", time.Minute) {
+		t.Fatal("first claim should win")
+	}
+	if claim("boot-a", time.Minute) {
+		t.Fatal("second claim should lose")
+	}
+	if !claim("boot-b", time.Minute) {
+		t.Fatal("other name should win")
+	}
+	// After the window passes (resumed session) the name can be taken again.
+	if !claim("boot-c", 50*time.Millisecond) {
+		t.Fatal("boot-c first")
+	}
+	time.Sleep(60 * time.Millisecond)
+	if !claim("boot-c", 50*time.Millisecond) {
+		t.Fatal("claim should be free again after the window")
+	}
+	// Parallel hooks, including ones that straddle a bucket boundary: one winner.
+	for round := 0; round < 20; round++ {
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		wins := 0
+		name := fmt.Sprintf("boot-par-%d", round)
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if claim(name, 5*time.Millisecond) {
+					mu.Lock()
+					wins++
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		if wins != 1 {
+			t.Errorf("parallel claims round %d: %d winners", round, wins)
+		}
+	}
+	// Storage failure is not a duplicate: the hook still runs.
+	t.Setenv("CLAUDE_CONFIG_DIR", "/proc/no-such-dir")
+	if !claim("boot-a", time.Minute) {
+		t.Fatal("unwritable claim dir should not suppress the hook")
+	}
+	if claimKey("a", "b") == claimKey("ab") || len(claimKey("x")) != 16 {
+		t.Error("claimKey")
 	}
 }
 

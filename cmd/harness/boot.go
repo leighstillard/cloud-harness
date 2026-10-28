@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -28,7 +26,7 @@ const (
 func runBoot(args []string) int {
 	in := readHookInput(500 * time.Millisecond)
 	sid := sessionID(in)
-	if alreadyBooted(sid) {
+	if !claim("boot-"+claimKey(sid), dedupeWindow) {
 		return 0
 	}
 	cwd := in.CWD
@@ -91,14 +89,14 @@ func runBoot(args []string) int {
 			reason = "memory unauthorized"
 		}
 		warnf("%s: %v", reason, err)
-		if text, age, ok := cache.Read(); ok {
+		// ponytail: one cache file for all repos, so a miss here just means
+		// "another repo booted last"; per-repo cache files if that bites.
+		if text, age, ok := cache.Read(); ok && strings.Contains(text, "\nrepo: "+id.String()+"\n") {
 			fmt.Print(hctx.MarkCached(text, age, reason))
-			markBooted(sid)
 			return 0
 		}
-		block.Note = reason + "; no cache yet"
+		block.Note = reason + "; no cache for this repo"
 		fmt.Print(hctx.Render(block))
-		markBooted(sid)
 		return 0
 	}
 	block.Global, block.ThisRepo = global, this
@@ -107,33 +105,5 @@ func runBoot(args []string) int {
 	if err := cache.Write(text); err != nil {
 		warnf("cache: %v", err)
 	}
-	markBooted(sid)
 	return 0
-}
-
-type bootMark struct {
-	Session string    `json:"session"`
-	At      time.Time `json:"at"`
-}
-
-func bootMarkPath() string { return filepath.Join(claudeDir(), "harness-boot.json") }
-
-// alreadyBooted is true when boot already printed for this session within
-// dedupeWindow: both the plugin hook and the merged settings hook may fire.
-func alreadyBooted(sid string) bool {
-	b, err := os.ReadFile(bootMarkPath())
-	if err != nil {
-		return false
-	}
-	var m bootMark
-	if json.Unmarshal(b, &m) != nil {
-		return false
-	}
-	return m.Session == sid && time.Since(m.At) < dedupeWindow
-}
-
-func markBooted(sid string) {
-	b, _ := json.Marshal(bootMark{Session: sid, At: time.Now()})
-	_ = os.MkdirAll(claudeDir(), 0o755)
-	_ = os.WriteFile(bootMarkPath(), b, 0o600)
 }

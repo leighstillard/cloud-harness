@@ -4,16 +4,20 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/leighstillard/cloud-harness/internal/config"
+	hctx "github.com/leighstillard/cloud-harness/internal/context"
 	"github.com/leighstillard/cloud-harness/internal/memory"
 	"github.com/leighstillard/cloud-harness/internal/settings"
 )
@@ -124,7 +128,60 @@ func claudeDir() string {
 	return d
 }
 
-func cachePath() string { return filepath.Join(claudeDir(), "harness-last.md") }
+func cachePath() string { return filepath.Join(claudeDir(), hctx.CacheFile) }
+
+// claim atomically records that name is being handled and reports whether
+// this process got there first. Claude Code runs every matching hook in
+// parallel, and both the plugin hook and the merged settings hook match, so
+// two copies of boot or remember --auto can start at once; O_EXCL makes
+// exactly one of them win. A claim older than window is stale (a resumed
+// session) and may be taken again.
+// claim reports whether this process is the first caller of name in the
+// current window. Claude Code runs every matching hook in parallel, so the
+// plugin hook and the merged settings hook race; O_EXCL on a file named by
+// the time bucket decides, with no stale-file reclaim to race over.
+func claim(name string, window time.Duration) bool {
+	dir := filepath.Join(claudeDir(), "harness-claims")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		warnf("claims: %v", err)
+		return true // storage trouble must not silently disable the hook
+	}
+	bucket := time.Now().UnixNano() / int64(window)
+	f, err := os.OpenFile(filepath.Join(dir, fmt.Sprintf("%s-%d", name, bucket)), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return false
+	}
+	if err != nil {
+		warnf("claims: %v", err)
+		return true
+	}
+	f.Close()
+	// ponytail: hooks straddling a bucket boundary would both win; a previous
+	// bucket claimed less than a window ago still counts as taken.
+	if st, err := os.Stat(filepath.Join(dir, fmt.Sprintf("%s-%d", name, bucket-1))); err == nil && time.Since(st.ModTime()) < window {
+		return false
+	}
+	pruneClaims(dir, window)
+	return true
+}
+
+func pruneClaims(dir string, window time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if st, err := e.Info(); err == nil && time.Since(st.ModTime()) > window+time.Hour {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+// claimKey makes a filename-safe key from arbitrary text.
+func claimKey(parts ...string) string {
+	h := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(h[:8])
+}
 
 func warnf(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "harness: "+format+"\n", a...)

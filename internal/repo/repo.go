@@ -15,8 +15,6 @@ import (
 type Identity struct {
 	Owner string
 	Name  string
-	// FromRemote is true when the identity came from `git remote get-url origin`.
-	FromRemote bool
 }
 
 // String returns "owner/name" or just "name".
@@ -61,5 +59,5 @@ func ParseRemote(url string) (Identity, bool) {
 	if m == nil || m[1] == "" || m[2] == "" {
 		return Identity{}, false
 	}
-	return Identity{Owner: m[1], Name: m[2], FromRemote: true}, true
+	return Identity{Owner: m[1], Name: m[2]}, true
 }
