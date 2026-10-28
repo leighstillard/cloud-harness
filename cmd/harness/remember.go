@@ -5,11 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/leighstillard/cloud-harness/internal/memory"
@@ -21,6 +21,7 @@ const (
 	rememberGlobalPrefix = "Remember global:"
 	ledgerMax            = 500
 	globalMax            = 50
+	pendingBatchMax      = 4000 // Claude Code collapses hook output over 10,000 chars
 )
 
 // runRemember implements `harness remember "<text>" [--global]` and
@@ -73,9 +74,13 @@ func runRemember(args []string) int {
 		return 1
 	}
 	if global {
+		unlock := lockLedger()
 		l := loadLedger()
 		l.noteGlobal(id.String(), text)
-		l.save()
+		if err := l.save(); err != nil {
+			warnf("ledger: %v", err)
+		}
+		unlock()
 		fmt.Println("remembered (global):", text)
 	} else {
 		fmt.Printf("remembered (%s): %s\n", id.String(), text)
@@ -99,7 +104,9 @@ func addRequest(scope memory.Scope, text, sid, repoName string) memory.AddReques
 // runRememberAuto stores `Remember:` / `Remember global:` lines from the last
 // assistant message and tells the user about global stores. Claude Code shows
 // a Stop hook's systemMessage; PreCompact discards it, so global stores wait
-// in the ledger's Pending list for the next Stop.
+// in the ledger's Pending list for the next Stop. The whole transaction runs
+// under the ledger lock: hooks from other sessions and manual --global calls
+// share the file.
 func runRememberAuto() int {
 	in := readHookInput(2 * time.Second)
 	msg := in.LastAssistantMessage
@@ -107,21 +114,22 @@ func runRememberAuto() int {
 		msg = lastAssistantText(in.TranscriptPath)
 	}
 	facts := extractRemembers(msg)
+	unlock := lockLedger()
+	defer unlock()
 	ledger := loadLedger()
-	if len(facts) == 0 && len(ledger.Pending) == 0 {
-		return 0
-	}
-	if !claim("auto-"+claimKey(sessionID(in), msg), dedupeWindow) {
-		return 0
-	}
-	if len(facts) > 0 {
+	// A lost claim means the twin hook stores the facts; it never skips the
+	// announcement, which may be older than this message.
+	if len(facts) > 0 && claim("auto-"+claimKey(sessionID(in), msg), dedupeWindow) {
 		ledger.store(in, facts)
 	}
-	if in.HookEventName != "PreCompact" && len(ledger.Pending) > 0 {
-		out, _ := json.Marshal(map[string]string{"systemMessage": "harness: stored to global memory:\n- " + strings.Join(ledger.Pending, "\n- ")})
-		fmt.Println(string(out))
-		ledger.Pending = nil
-		ledger.save()
+	if in.HookEventName != "PreCompact" {
+		if batch := ledger.takePending(); len(batch) > 0 {
+			out, _ := json.Marshal(map[string]string{"systemMessage": "harness: stored to global memory:\n- " + strings.Join(batch, "\n- ")})
+			fmt.Println(string(out))
+			if err := ledger.save(); err != nil {
+				warnf("ledger: %v", err)
+			}
+		}
 	}
 	return 0
 }
@@ -162,7 +170,9 @@ func (l *ledger) store(in hookInput, facts []fact) {
 		stored++
 	}
 	if stored > 0 {
-		l.save()
+		if err := l.save(); err != nil {
+			warnf("ledger: %v", err)
+		}
 		warnf("auto-remembered %d fact(s)", stored)
 	}
 }
@@ -260,11 +270,48 @@ type ledger struct {
 }
 
 func (l *ledger) noteGlobal(repoName, text string) {
+	if len(text) > 1000 {
+		text = text[:1000] + "…"
+	}
 	l.Global = append(l.Global, time.Now().UTC().Format("2006-01-02 15:04")+" "+repoName+": "+text)
 	if len(l.Global) > globalMax {
 		l.Global = l.Global[len(l.Global)-globalMax:]
 	}
+	// ponytail: Pending shares the Global cap; a repo that elicits more than
+	// 50 global lines before a Stop loses the oldest announcements, and
+	// `harness status` still shows the record.
 	l.Pending = append(l.Pending, text)
+	if len(l.Pending) > globalMax {
+		l.Pending = l.Pending[len(l.Pending)-globalMax:]
+	}
+}
+
+// takePending removes and returns the pending announcements that fit one
+// hook response; the rest wait for the next Stop.
+func (l *ledger) takePending() []string {
+	var batch []string
+	n := 0
+	for len(l.Pending) > 0 && n+len(l.Pending[0])+3 <= pendingBatchMax {
+		n += len(l.Pending[0]) + 3
+		batch = append(batch, l.Pending[0])
+		l.Pending = l.Pending[1:]
+	}
+	return batch
+}
+
+// lockLedger serialises ledger transactions across processes. A lock that
+// cannot be taken degrades to no lock rather than disabling the hook.
+func lockLedger() func() {
+	_ = os.MkdirAll(claudeDir(), 0o755)
+	f, err := os.OpenFile(ledgerPath()+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return func() {}
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return func() {}
+	}
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }
 }
 
 func ledgerPath() string { return filepath.Join(claudeDir(), "harness-remembered.json") }
@@ -293,15 +340,18 @@ func (l *ledger) add(key string) {
 	}
 }
 
-func (l *ledger) save() {
+// save writes the ledger atomically (temp file + rename).
+func (l *ledger) save() error {
 	b, err := json.Marshal(l)
 	if err != nil {
-		return
+		return err
 	}
 	_ = os.MkdirAll(filepath.Dir(l.path), 0o755)
-	if err := os.WriteFile(l.path, b, 0o600); err != nil && !errors.Is(err, os.ErrPermission) {
-		warnf("ledger: %v", err)
+	tmp := l.path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
 	}
+	return os.Rename(tmp, l.path)
 }
 
 func hash(global bool, repoName, text string) string {
