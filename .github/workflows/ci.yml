@@ -13,9 +13,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7 # v6+ honours the toolchain directive in go.mod
         with:
           go-version-file: go.mod
+      - name: toolchain is the pinned one
+        run: |
+          want=$(sed -n 's/^toolchain //p' go.mod)
+          go version | grep -q " $want " || { echo "go version is $(go version), want $want" >&2; exit 1; }
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: vet
@@ -24,6 +28,8 @@ jobs:
         run: go test ./...
       - name: build
         run: CGO_ENABLED=0 go build ./cmd/harness
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./... # pinned scanner; it still queries the live vuln database
       - name: shellcheck
         run: shellcheck cloud/setup.sh.example
       - uses: actions/setup-node@v4

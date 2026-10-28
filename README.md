@@ -122,7 +122,7 @@ harness remember --global "Prefer tabs in Go"
 
 Each write carries `run_id=<session id>` and metadata `{source: harness, repo, ts}`. Facts are stored verbatim (`infer=false`).
 
-`--auto` reads the hook JSON on stdin, takes the last assistant message, and stores lines starting `Remember:` (repo scope) or `Remember global:`. Anything else exits 0 silently. A small ledger prevents the Stop and PreCompact hooks from storing the same line twice.
+`--auto` reads the hook JSON on stdin, takes the last assistant message, and stores lines starting `Remember:` (repo scope) or `Remember global:`. Anything else exits 0 silently. A small ledger prevents the Stop and PreCompact hooks from storing the same line twice. Every global store, automatic or via `--global`, is announced to you after the turn through the Stop hook's `systemMessage` (PreCompact cannot show one, so those wait for the next Stop), and `harness status` lists the last ten.
 
 ## Layout
 

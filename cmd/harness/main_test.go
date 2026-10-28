@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -191,4 +192,66 @@ func TestLedger(t *testing.T) {
 	if len(l.Keys) != ledgerMax {
 		t.Errorf("ledger not capped: %d", len(l.Keys))
 	}
+}
+
+func TestLedgerGlobalNote(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	l := loadLedger()
+	for i := 0; i < globalMax+5; i++ {
+		l.noteGlobal("acme/widgets", fmt.Sprintf("fact %d", i))
+	}
+	if err := l.save(); err != nil {
+		t.Fatal(err)
+	}
+	l = loadLedger()
+	if len(l.Global) != globalMax || !strings.HasSuffix(l.Global[len(l.Global)-1], "acme/widgets: fact 54") {
+		t.Fatalf("global = %d entries, last %q", len(l.Global), l.Global[len(l.Global)-1])
+	}
+	if len(l.Pending) != globalMax {
+		t.Fatalf("pending = %d", len(l.Pending))
+	}
+	// One hook response carries at most pendingBatchMax bytes; the rest waits.
+	l = &ledger{}
+	for i := 0; i < 20; i++ {
+		l.noteGlobal("r", strings.Repeat("x", 300))
+	}
+	batch := l.takePending()
+	if len(batch) != 13 || len(l.Pending) != 7 {
+		t.Fatalf("batch = %d, left = %d", len(batch), len(l.Pending))
+	}
+	if second := l.takePending(); len(second) != 7 || len(l.Pending) != 0 {
+		t.Fatalf("second batch = %d, left = %d", len(second), len(l.Pending))
+	}
+}
+
+func TestLedgerLockSerialisesWriters(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			unlock := lockLedger(context.Background())
+			defer unlock()
+			l := loadLedger()
+			l.noteGlobal("r", fmt.Sprintf("fact %d", i))
+			if err := l.save(); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if l := loadLedger(); len(l.Pending) != 16 {
+		t.Fatalf("lost writes: pending = %d", len(l.Pending))
+	}
+	// A waiter gives up at its deadline instead of outliving the hook timeout.
+	hold := lockLedger(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	lockLedger(ctx)()
+	if d := time.Since(start); d < 100*time.Millisecond || d > time.Second {
+		t.Fatalf("lock wait = %s, want about the 150ms deadline", d)
+	}
+	hold()
 }
