@@ -1,0 +1,17 @@
+{
+  "name": "cloud-harness",
+  "owner": {
+    "name": "cloud-harness maintainers"
+  },
+  "metadata": {
+    "description": "Generic bootstrap for Claude Code cloud sessions: persistent memory, pinned plugins, merged hooks."
+  },
+  "plugins": [
+    {
+      "name": "harness",
+      "source": "./plugins/harness",
+      "description": "SessionStart/Stop/PreCompact hooks that run the harness binary, plus the harness memory skill.",
+      "version": "0.1.0"
+    }
+  ]
+}
