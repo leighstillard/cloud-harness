@@ -1,0 +1,9 @@
+{
+  "name": "harness",
+  "version": "0.1.0",
+  "description": "Persistent memory and session bootstrap for Claude Code cloud sessions via the harness binary.",
+  "author": {
+    "name": "cloud-harness maintainers"
+  },
+  "keywords": ["memory", "cloud", "session", "bootstrap"]
+}
