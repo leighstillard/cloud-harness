@@ -25,17 +25,19 @@ else
 fi
 
 # The checksum file comes from the same release, so this catches a corrupt or
-# swapped asset, not a compromised release: pin VERSION for that.
-if curl -fsSL --retry 3 --retry-delay 2 "$url" -o /usr/local/bin/harness.tmp \
-   && curl -fsSL --retry 3 --retry-delay 2 "${url%/*}/SHA256SUMS" -o /tmp/harness.sums \
-   && [ "$(sha256sum /usr/local/bin/harness.tmp | cut -d' ' -f1)" = "$(grep " harness-linux-${arch}\$" /tmp/harness.sums | cut -d' ' -f1)" ]; then
-  chmod +x /usr/local/bin/harness.tmp
-  mv /usr/local/bin/harness.tmp /usr/local/bin/harness
+# swapped asset only. Pinning VERSION avoids the moving "latest" alias; it does
+# not authenticate the assets (that would need a separately trusted signature).
+# Downloads go to a private mktemp dir: this runs as root and a fixed /tmp path
+# could be pre-planted as a symlink.
+if tmp="$(mktemp -d)" && trap 'rm -rf "$tmp"' EXIT \
+   && curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$tmp/harness" \
+   && curl -fsSL --retry 3 --retry-delay 2 "${url%/*}/SHA256SUMS" -o "$tmp/sums" \
+   && [ "$(sha256sum "$tmp/harness" | cut -d' ' -f1)" = "$(grep " harness-linux-${arch}\$" "$tmp/sums" | cut -d' ' -f1)" ]; then
+  chmod +x "$tmp/harness"
+  mv "$tmp/harness" /usr/local/bin/harness
 else
   echo "cloud-harness: download or checksum failed for $url" >&2
-  rm -f /usr/local/bin/harness.tmp
 fi
-rm -f /tmp/harness.sums
 
 mkdir -p ~/.config/cloud-harness
 cat > ~/.config/cloud-harness/config.yml <<'YAML'
