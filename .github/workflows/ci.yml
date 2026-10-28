@@ -24,6 +24,8 @@ jobs:
         run: go test ./...
       - name: build
         run: CGO_ENABLED=0 go build ./cmd/harness
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
       - name: shellcheck
         run: shellcheck cloud/setup.sh.example
       - uses: actions/setup-node@v4

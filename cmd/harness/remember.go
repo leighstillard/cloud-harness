@@ -20,6 +20,7 @@ const (
 	rememberPrefix       = "Remember:"
 	rememberGlobalPrefix = "Remember global:"
 	ledgerMax            = 500
+	globalMax            = 50
 )
 
 // runRemember implements `harness remember "<text>" [--global]` and
@@ -72,6 +73,9 @@ func runRemember(args []string) int {
 		return 1
 	}
 	if global {
+		l := loadLedger()
+		l.noteGlobal(id.String(), text)
+		l.save()
 		fmt.Println("remembered (global):", text)
 	} else {
 		fmt.Printf("remembered (%s): %s\n", id.String(), text)
@@ -92,8 +96,10 @@ func addRequest(scope memory.Scope, text, sid, repoName string) memory.AddReques
 	}
 }
 
-// runRememberAuto stores only `Remember:` lines from the last assistant
-// message. Anything else is ignored and the hook exits 0 silently.
+// runRememberAuto stores `Remember:` / `Remember global:` lines from the last
+// assistant message and tells the user about global stores. Claude Code shows
+// a Stop hook's systemMessage; PreCompact discards it, so global stores wait
+// in the ledger's Pending list for the next Stop.
 func runRememberAuto() int {
 	in := readHookInput(2 * time.Second)
 	msg := in.LastAssistantMessage
@@ -101,49 +107,64 @@ func runRememberAuto() int {
 		msg = lastAssistantText(in.TranscriptPath)
 	}
 	facts := extractRemembers(msg)
-	if len(facts) == 0 {
+	ledger := loadLedger()
+	if len(facts) == 0 && len(ledger.Pending) == 0 {
 		return 0
 	}
-	sid := sessionID(in)
-	if !claim("auto-"+claimKey(sid, msg), dedupeWindow) {
+	if !claim("auto-"+claimKey(sessionID(in), msg), dedupeWindow) {
 		return 0
 	}
+	if len(facts) > 0 {
+		ledger.store(in, facts)
+	}
+	if in.HookEventName != "PreCompact" && len(ledger.Pending) > 0 {
+		out, _ := json.Marshal(map[string]string{"systemMessage": "harness: stored to global memory:\n- " + strings.Join(ledger.Pending, "\n- ")})
+		fmt.Println(string(out))
+		ledger.Pending = nil
+		ledger.save()
+	}
+	return 0
+}
+
+// store sends facts not already in the ledger to the provider.
+func (l *ledger) store(in hookInput, facts []fact) {
 	cfg, err := loadConfig()
 	if err != nil {
 		warnf("%v", err)
-		return 0
+		return
 	}
 	cwd := in.CWD
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
 	id := repo.Resolve(cwd)
-	ledger := loadLedger()
 	ctx, cancel := background(20 * time.Second)
 	defer cancel()
 	prov := newProvider(cfg, 10*time.Second)
 	stored := 0
 	for _, f := range facts {
 		key := hash(f.global, id.String(), f.text)
-		if ledger.has(key) {
+		if l.has(key) {
 			continue
 		}
 		scope := memory.Scope{UserID: cfg.UserID}
 		if !f.global {
 			scope.AgentID = id.String()
 		}
-		if err := prov.Add(ctx, addRequest(scope, f.text, sid, id.String())); err != nil {
+		if err := prov.Add(ctx, addRequest(scope, f.text, sessionID(in), id.String())); err != nil {
 			warnf("auto remember: %v", err)
 			continue
 		}
-		ledger.add(key)
+		l.add(key)
+		if f.global {
+			l.noteGlobal(id.String(), f.text)
+		}
 		stored++
 	}
 	if stored > 0 {
-		ledger.save()
+		l.save()
 		warnf("auto-remembered %d fact(s)", stored)
 	}
-	return 0
 }
 
 type fact struct {
@@ -232,8 +253,18 @@ func contentText(raw json.RawMessage) string {
 // ledger remembers what --auto already stored so Stop and PreCompact do not
 // store the same line twice.
 type ledger struct {
-	path string
-	Keys []string `json:"keys"`
+	path    string
+	Keys    []string `json:"keys"`
+	Global  []string `json:"global,omitempty"`  // recent global stores, for `harness status`
+	Pending []string `json:"pending,omitempty"` // global stores not yet shown to the user
+}
+
+func (l *ledger) noteGlobal(repoName, text string) {
+	l.Global = append(l.Global, time.Now().UTC().Format("2006-01-02 15:04")+" "+repoName+": "+text)
+	if len(l.Global) > globalMax {
+		l.Global = l.Global[len(l.Global)-globalMax:]
+	}
+	l.Pending = append(l.Pending, text)
 }
 
 func ledgerPath() string { return filepath.Join(claudeDir(), "harness-remembered.json") }

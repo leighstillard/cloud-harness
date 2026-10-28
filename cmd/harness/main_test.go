@@ -192,3 +192,19 @@ func TestLedger(t *testing.T) {
 		t.Errorf("ledger not capped: %d", len(l.Keys))
 	}
 }
+
+func TestLedgerGlobalNote(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	l := loadLedger()
+	for i := 0; i < globalMax+5; i++ {
+		l.noteGlobal("acme/widgets", fmt.Sprintf("fact %d", i))
+	}
+	l.save()
+	l = loadLedger()
+	if len(l.Global) != globalMax || !strings.HasSuffix(l.Global[len(l.Global)-1], "acme/widgets: fact 54") {
+		t.Fatalf("global = %d entries, last %q", len(l.Global), l.Global[len(l.Global)-1])
+	}
+	if len(l.Pending) != globalMax+5 {
+		t.Fatalf("pending = %d", len(l.Pending))
+	}
+}

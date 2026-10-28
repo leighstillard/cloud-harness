@@ -69,6 +69,16 @@ func runStatus(args []string) int {
 
 	sp, _ := settings.Path()
 	fmt.Printf("settings:  %s\n", sp)
+	if l := loadLedger(); len(l.Global) > 0 {
+		recent := l.Global
+		if len(recent) > 10 {
+			recent = recent[len(recent)-10:]
+		}
+		fmt.Printf("global:    %d recent store(s), newest last\n", len(recent))
+		for _, g := range recent {
+			fmt.Println("           " + g)
+		}
+	}
 
 	if _, err := exec.LookPath("claude"); err != nil {
 		fmt.Println("plugins:   claude CLI not on PATH")
