@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/leighstillard/cloud-harness/internal/config"
+	hctx "github.com/leighstillard/cloud-harness/internal/context"
 	"github.com/leighstillard/cloud-harness/internal/memory"
 	"github.com/leighstillard/cloud-harness/internal/settings"
 )
@@ -124,7 +125,7 @@ func claudeDir() string {
 	return d
 }
 
-func cachePath() string { return filepath.Join(claudeDir(), "harness-last.md") }
+func cachePath() string { return filepath.Join(claudeDir(), hctx.CacheFile) }
 
 func warnf(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "harness: "+format+"\n", a...)

@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/leighstillard/cloud-harness/internal/config"
 )
@@ -171,9 +170,4 @@ func lastLine(b []byte) string {
 		s = s[i+1:]
 	}
 	return s
-}
-
-// WithTimeout is a helper for callers that cap total install time.
-func WithTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, d)
 }
