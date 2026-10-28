@@ -48,7 +48,7 @@ Set `CLOUD_HARNESS_CONFIG_DIR` to use a different config directory. `CLAUDE_CONF
 
 ## Cloud environment steps
 
-1. Create a cloud environment. Set **Network access** to Custom with "include default package managers" and allow `api.mem0.ai` (or your provider's host).
+1. Create a cloud environment. Its **Network access** must reach `api.mem0.ai` (or your provider's host) and GitHub releases: full access does, and so does Custom with the default package managers plus `api.mem0.ai`.
 2. Add a **network secret** for `api.mem0.ai` (see below).
 3. Copy [`cloud/setup.sh.example`](cloud/setup.sh.example) into the environment's **Setup script**, fill in `OWNER`, `user_id` and your plugins.
 4. Start a session in any repo. The `## harness` block appears at the top of context.
