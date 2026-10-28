@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,8 +132,13 @@ func (c *Config) validate() error {
 	if c.Memory.Provider != "mem0" {
 		return fmt.Errorf("config: unsupported memory.provider %q (supported: mem0)", c.Memory.Provider)
 	}
-	if !strings.HasPrefix(c.Memory.BaseURL, "https://") && !strings.HasPrefix(c.Memory.BaseURL, "http://") {
+	u, err := url.Parse(c.Memory.BaseURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 		return fmt.Errorf("config: memory.base_url must be an http(s) URL, got %q", c.Memory.BaseURL)
+	}
+	// The API key travels in a header, so plaintext is only for a local provider.
+	if u.Scheme == "http" && u.Hostname() != "localhost" && !net.ParseIP(u.Hostname()).IsLoopback() {
+		return fmt.Errorf("config: memory.base_url must use https (http is allowed only for localhost), got %q", c.Memory.BaseURL)
 	}
 	for i, p := range c.Plugins.Setup {
 		if err := p.validate(); err != nil {

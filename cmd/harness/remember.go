@@ -104,6 +104,10 @@ func runRememberAuto() int {
 	if len(facts) == 0 {
 		return 0
 	}
+	sid := sessionID(in)
+	if !claim("auto-"+claimKey(sid, msg), dedupeWindow) {
+		return 0
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		warnf("%v", err)
@@ -114,7 +118,6 @@ func runRememberAuto() int {
 		cwd, _ = os.Getwd()
 	}
 	id := repo.Resolve(cwd)
-	sid := sessionID(in)
 	ledger := loadLedger()
 	ctx, cancel := background(20 * time.Second)
 	defer cancel()

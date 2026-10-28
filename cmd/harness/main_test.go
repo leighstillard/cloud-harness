@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestWriteClaudeMD(t *testing.T) {
@@ -117,6 +119,50 @@ func TestDotenvAndSessionID(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_REMOTE_SESSION_ID", "cse_1")
 	if got := sessionID(hookInput{SessionID: "from-hook"}); got != "cse_1" {
 		t.Errorf("env should win: %q", got)
+	}
+}
+
+func TestClaim(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	if !claim("boot-a", time.Minute) {
+		t.Fatal("first claim should win")
+	}
+	if claim("boot-a", time.Minute) {
+		t.Fatal("second claim should lose")
+	}
+	if !claim("boot-b", time.Minute) {
+		t.Fatal("other name should win")
+	}
+	// A stale claim (resumed session) can be taken again.
+	p := filepath.Join(claudeDir(), "harness-claims", "boot-a")
+	old := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if !claim("boot-a", time.Minute) {
+		t.Fatal("stale claim should be reclaimable")
+	}
+	// Parallel hooks: exactly one winner.
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	wins := 0
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if claim("boot-par", time.Minute) {
+				mu.Lock()
+				wins++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Errorf("parallel claims: %d winners", wins)
+	}
+	if claimKey("a", "b") == claimKey("ab") || len(claimKey("x")) != 16 {
+		t.Error("claimKey")
 	}
 }
 

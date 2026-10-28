@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -126,6 +127,53 @@ func claudeDir() string {
 }
 
 func cachePath() string { return filepath.Join(claudeDir(), hctx.CacheFile) }
+
+// claim atomically records that name is being handled and reports whether
+// this process got there first. Claude Code runs every matching hook in
+// parallel, and both the plugin hook and the merged settings hook match, so
+// two copies of boot or remember --auto can start at once; O_EXCL makes
+// exactly one of them win. A claim older than window is stale (a resumed
+// session) and may be taken again.
+func claim(name string, window time.Duration) bool {
+	dir := filepath.Join(claudeDir(), "harness-claims")
+	_ = os.MkdirAll(dir, 0o700)
+	p := filepath.Join(dir, name)
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			f.Close()
+			pruneClaims(dir, window)
+			return true
+		}
+		st, err := os.Stat(p)
+		if err != nil || time.Since(st.ModTime()) < window {
+			return false
+		}
+		// Stale: rename is atomic, so only one process gets to retry.
+		if os.Rename(p, p+".stale") != nil {
+			return false
+		}
+	}
+	return false
+}
+
+func pruneClaims(dir string, window time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if st, err := e.Info(); err == nil && time.Since(st.ModTime()) > window+time.Hour {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+// claimKey makes a filename-safe key from arbitrary text.
+func claimKey(parts ...string) string {
+	h := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(h[:8])
+}
 
 func warnf(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "harness: "+format+"\n", a...)
